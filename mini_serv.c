@@ -6,6 +6,8 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
+#include <stdio.h>
+
 
 int extract_message(char **buf, char **msg)
 {
@@ -80,7 +82,7 @@ char	tmp[1024];
 int	get_max_fds()
 {
 	t_client *tmp = clients;
-	int max = 0;
+	int max = sockfd;
 	while (tmp)
 	{
 		if (tmp->fd > max)
@@ -94,7 +96,7 @@ void	send_to_all(int fd, char *notice)
 {
 	t_client *current = clients;
 
-	printf("sending to all clients");
+	printf("sending to all clients\n");
 
 	while (current)
 	{
@@ -117,25 +119,24 @@ void	accept_client()
 	if ((fd = accept(sockfd, (struct sockaddr *)&client_address, &size)) < 0)
 		fatal_error();
 	bzero(&notice, strlen(notice));
-	sprintf(notice, "server: client %d just arrived", client_id);
+	sprintf(notice, "server: client %d just arrived\n", client_id);
 	send_to_all(fd, notice);
 	FD_SET(fd, &tmp_fds);
 
 	new = calloc(1, sizeof(t_client));
 	if (!new)
-		fatal_error;
+		fatal_error();
 	
 	new->id = client_id;
 	new->fd = fd;
 	new->next = NULL;
 	if (!clients)
 	{
-		printf("first connection");
+		printf("first connection\n");
 		clients = new;
 	}
 	else
 	{
-		printf("adding new client");
 		t_client *current = clients;
 		while(current->next)
 			current = current->next;
@@ -151,7 +152,7 @@ int	get_client_id(int fd)
 	while (current)
 	{
 		if (current->fd == fd)
-			return (current->fd);
+			return (current->id);
 		current = current->next;
 	}
 	return (-1);
@@ -163,7 +164,7 @@ void	remove_client(fd)
 	t_client *to_rm;
 
 	int id = get_client_id(fd);
-	printf("removing client id [%d]", id);
+	printf("removing client id [%d]\n", id);
 
 	if (current && current->fd == fd)
 	{
@@ -178,7 +179,7 @@ void	remove_client(fd)
 		free(to_rm);
 	}
 	bzero(&notice, strlen(notice));
-	sprintf(notice, "server: client %d just left", id);
+	sprintf(notice, "server: client %d just left\n", id);
 	send_to_all(fd, notice);
 	FD_CLR(fd, &tmp_fds);
 	close(fd);
@@ -197,7 +198,7 @@ void	msg_from_client(fd)
 		//might not be the end of the message
 		if (buf[i] == '\n')
 		{
-			sprintf(notice, "client %d: %s", get_client_id(fd), tmp);
+			sprintf(notice, "client %d: %s\n", get_client_id(fd), tmp);
 			//printf("notice : %s\n", notice);
 			send_to_all(fd, notice);
 			j = 0;
@@ -227,7 +228,7 @@ int main(int ac, char **av) {
 		fatal_error();
 	
 	int	port = atoi(av[1]);
-	struct sockaddr_in servaddr, cli; 
+	struct sockaddr_in servaddr;
 
 	// socket create and verification 
 	sockfd = socket(AF_INET, SOCK_STREAM, 0); 
@@ -235,73 +236,91 @@ int main(int ac, char **av) {
 		fatal_error();
 	else
 		printf("Socket [%d] successfully created..\n", sockfd); 
-	bzero(&servaddr, sizeof(servaddr)); 
 
+	bzero(&servaddr, sizeof(servaddr)); 
 	// assign IP, PORT 
 	servaddr.sin_family = AF_INET; 
 	servaddr.sin_addr.s_addr = htonl(2130706433); //127.0.0.1
 	servaddr.sin_port = htons(port); 
   
 	// Binding newly created socket to given IP and verification 
-	if ((bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0)
+	if ((bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) < 0)
 		fatal_error();
 	else
-		printf("Socket successfully binded..\n");
+		printf("Socket successfully bound to port [%d]\n", port);
 	
-	if (listen(sockfd, 0))
-		fatal_error();	
+	if (listen(sockfd, 50) < 0)
+		fatal_error();
+	else
+		printf("Server listening on port [%d]\n", port);
 
-	FD_ZERO(&tmp_fds);
-	FD_SET(sockfd, &tmp_fds);
-	bzero(&notice, strlen(notice));
-	bzero(&buf, strlen(buf));
+	bzero(&notice, sizeof(notice));
+	bzero(&buf, sizeof(buf));
 
 	while (1)
 	{
-		tmp_fds = read_fds;
-		read_fds = write_fds;
+		FD_ZERO(&read_fds);
+		FD_ZERO(&write_fds);
+		FD_ZERO(&tmp_fds);
+
+		FD_SET(sockfd, &read_fds);
+		t_client *current = clients;
+		while (current)
+		{
+			FD_SET(current->fd, &read_fds);
+			FD_SET(current->fd, &write_fds);
+			current = current->next;
+		}
 		int max_fds = get_max_fds() + 1;
 
-		if (select(max_fds, &read_fds, &write_fds, NULL, NULL) == -1)
+		struct timeval timeout;
+
+		timeout.tv_sec = 0;
+		timeout.tv_usec = 0;
+		int test = select(max_fds, &read_fds, &write_fds, NULL, &timeout);
+		// printf("test: %d\n", test);
+		if (test < 0)
 			continue;
 
 		//loop thru all clients
 		for (int fd = 0; fd <= max_fds; fd++)
 		{
-
+			// printf("browsing\n");
 			//check if fd is in fd_set
-			if (!FD_ISSET(fd, &read_fds))
-				continue;
-			//new client
-			if (fd == sockfd)
+			if (FD_ISSET(fd, &read_fds))
 			{
-				printf("Accepting client [%d]", fd);
-				accept_client();
-				break ;
-			}
-
-
-			//receive msg from client
-			int ret = 1;
-			while (ret == 1 && buf[strlen(buf) - 1] != '\n')
-			{
-				ret = recv(fd, buf + strlen(buf), 1, 0);
-				if (ret <= 0)
+				//new client
+				if (fd == sockfd)
+				{
+					printf("Accepting client [%d]\n", fd);
+					accept_client();
 					break ;
-			}
+				}
 
-			//if recv() returns -1 or 0 bytes, remove client 
-			if (ret <= 0)
-			{
-				printf("removing client [%d]", fd);
-				remove_client(fd);
-				break ;
-			}
-			//msg from client
-			else
-			{
-				msg_from_client(fd);
-				break ;
+
+				//receive msg from client
+				int ret = 1;
+				while (ret == 1 && buf[strlen(buf) - 1] != '\n')
+				{
+					ret = recv(fd, buf + strlen(buf), 1, 0);
+					if (ret <= 0)
+						break ;
+				}
+
+				//if recv() returns -1 or 0 bytes, remove client 
+				if (ret <= 0)
+				{
+					printf("removing client [%d]\n", fd);
+					remove_client(fd);
+					break ;
+				}
+				//msg from client
+				else
+				{
+					msg_from_client(fd);
+					break ;
+				}
+				printf("here\n");
 			}
 		}
 	}
